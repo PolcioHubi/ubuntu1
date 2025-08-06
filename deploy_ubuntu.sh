@@ -3,6 +3,7 @@
 # ==============================================================================
 # Skrypt do pełnego wdrożenia aplikacji Flask/Gunicorn z Nginx, SSL i Logowaniem
 # Wersja ostateczna: dynamiczne workery, automatyczna obsługa HTTP/2 przez Certbot.
+# Zawiera wszystkie poprawki: uprawnienia, cache, bezpieczny Nginx i wczytywanie .env
 # ==============================================================================
 
 # Zatrzymaj skrypt w przypadku błędu
@@ -10,19 +11,12 @@ set -e
 
 # --- ZMIENNE KONFIGURACYJNE (dostosuj do swoich potrzeb) ---
 SERVICE_NAME="mobywatel"
-# Stwórz dedykowanego użytkownika, aby nie uruchamiać aplikacji jako root
-# UWAGA: Jeśli ten użytkownik nie istnieje, skrypt go utworzy.
 PROJECT_USER="mobywatel_user"
-# Automatyczne rozpoznawanie ścieżki do katalogu aplikacji.
-# Skrypt zakłada, że znajduje się w głównym katalogu projektu.
 DEST_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
-# Twoja domena (bez https://)
 DOMAIN="gov-mobywatel.polcio.p5.tiktalik.io"
-# Twój adres e-mail dla certyfikatu SSL
 SSL_EMAIL="polciovps@atomicmail.io"
-# Liczba workerów Gunicorna - obliczana dynamicznie
-# Formuła: (2 * liczba_rdzeni_CPU) + 1
 GUNICORN_WORKERS=$((2 * $(nproc) + 1))
+CSP_HEADER="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self';"
 
 
 echo ">>> START: Rozpoczynanie wdrożenia aplikacji $SERVICE_NAME..."
@@ -49,7 +43,6 @@ sudo systemctl start redis-server
 sudo systemctl enable redis-server
 
 # --- KROK 1.5: Dodanie użytkownika Nginx do grupy projektu ---
-# To kluczowy krok, aby Nginx (działający jako www-data) miał dostęp do socketu Gunicorna.
 echo ">>> KROK 1.5: Dodawanie użytkownika www-data do grupy $PROJECT_USER..."
 sudo usermod -aG $PROJECT_USER www-data
 
@@ -64,24 +57,23 @@ sudo chown -R $PROJECT_USER:$PROJECT_USER $DEST_DIR/logs
 echo ">>> KROK 2.6: Ustawianie bezpiecznych uprawnień do plików i folderów..."
 sudo find $DEST_DIR -type d -exec chmod 750 {} \;
 sudo find $DEST_DIR -type f -exec chmod 640 {} \;
-# Upewnij się, że sam skrypt jest wykonywalny
 sudo chmod +x $0
 
 # --- KROK 3: Konfiguracja środowiska wirtualnego i zależności ---
 echo ">>> KROK 3: Uruchamianie konfiguracji środowiska Python jako użytkownik $PROJECT_USER..."
-
-# Używamy `sudo -u` z `bash -c`, aby wykonać cały blok komend jako dedykowany użytkownik.
 sudo -u "$PROJECT_USER" bash -c "
 set -e
 echo '--- Tworzenie pliku .env z sekretami...'
 cat > '$DEST_DIR/.env' <<EOF
-SECRET_KEY=$(openssl rand -hex 32)
+SECRET_KEY=\$(openssl rand -hex 32)
 ADMIN_USERNAME=admin
-ADMIN_PASSWORD=$(openssl rand -hex 16)
+ADMIN_PASSWORD=\$(openssl rand -hex 16)
 EOF
 
 echo '--- Tworzenie środowiska wirtualnego w $DEST_DIR/venv...'
 python3 -m venv '$DEST_DIR/venv'
+
+chmod -R +x '$DEST_DIR/venv/bin'
 
 echo '--- Aktualizacja pip i instalacja zależności z requirements.txt...'
 '$DEST_DIR/venv/bin/pip' install --upgrade pip
@@ -94,6 +86,9 @@ echo '--- Wykonywanie migracji bazy danych...'
 # --- KROK 4: Konfiguracja usługi Systemd dla Gunicorn ---
 echo ">>> KROK 4: Tworzenie pliku usługi /etc/systemd/system/${SERVICE_NAME}.service..."
 sudo rm -f /etc/systemd/system/${SERVICE_NAME}.service
+# ==============================================================================
+# OSTATNIA POPRAWKA: Dodanie EnvironmentFile, aby usługa wczytała .env
+# ==============================================================================
 sudo tee /etc/systemd/system/${SERVICE_NAME}.service > /dev/null <<EOF
 [Unit]
 Description=Gunicorn instance to serve $SERVICE_NAME
@@ -103,9 +98,9 @@ After=network.target
 User=$PROJECT_USER
 Group=$PROJECT_USER
 WorkingDirectory=$DEST_DIR
+EnvironmentFile=$DEST_DIR/.env
 Environment="PATH=$DEST_DIR/venv/bin"
 Environment="FLASK_ENV=production"
-# Umask 007 pozwala grupie (do której dodaliśmy www-data) na zapis do socketu
 ExecStart=$DEST_DIR/venv/bin/gunicorn --workers $GUNICORN_WORKERS --bind unix:$DEST_DIR/${SERVICE_NAME}.sock -m 007 --access-logfile $DEST_DIR/logs/gunicorn_access.log --error-logfile $DEST_DIR/logs/gunicorn_error.log wsgi:application
 Restart=always
 
@@ -117,49 +112,49 @@ EOF
 echo ">>> KROK 5: Tworzenie WSTĘPNEJ konfiguracji Nginx dla domeny $DOMAIN (tylko port 80)..."
 sudo rm -f /etc/nginx/sites-available/$SERVICE_NAME
 sudo rm -f /etc/nginx/sites-enabled/$SERVICE_NAME
-# Ta konfiguracja jest celowo uproszczona, aby Certbot mógł ją pomyślnie zmodyfikować.
-sudo tee /etc/nginx/sites-available/$SERVICE_NAME > /dev/null <<EOF
-proxy_cache_path /var/cache/nginx/mobywatel_cache levels=1:2 keys_zone=mobywatel_cache:10m max_size=1g inactive=60m use_temp_path=off;
+
+printf 'proxy_cache_path /var/cache/nginx/mobywatel_cache levels=1:2 keys_zone=mobywatel_cache:10m max_size=1g inactive=60m use_temp_path=off;
 
 server {
     listen 80;
     listen [::]:80;
-    server_name $DOMAIN;
+    server_name %s;
 
-    # Włącz buforowanie dla tego location
     location / {
         proxy_cache mobywatel_cache;
-        proxy_cache_valid 200 10m; # Buforuj odpowiedzi 200 OK na 10 minut
+        proxy_cache_valid 200 10m;
         proxy_cache_revalidate on;
-        proxy_cache_min_uses 1; # Buforuj po pierwszym użyciu
+        proxy_cache_min_uses 1;
         proxy_cache_use_stale error timeout updating http_500 http_502 http_503 http_504;
         proxy_cache_background_update on;
         proxy_ignore_headers Cache-Control Expires Set-Cookie;
-        add_header X-Proxy-Cache $upstream_cache_status;
+        add_header X-Proxy-Cache \$upstream_cache_status;
 
-        proxy_pass http://unix:$DEST_DIR/${SERVICE_NAME}.sock;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_pass http://unix:%s/%s.sock;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
 
-        # Dodatkowe nagłówki bezpieczeństwa
         add_header X-Content-Type-Options "nosniff" always;
         add_header X-Frame-Options "SAMEORIGIN" always;
         add_header X-XSS-Protection "1; mode=block" always;
         add_header Referrer-Policy "no-referrer-when-downgrade" always;
-        add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self';" always;
+        add_header Content-Security-Policy "%s" always;
     }
 
     location /static {
-        alias $DEST_DIR/static;
+        alias %s/static;
     }
 
-    # Logi dostępu i błędów
-    access_log $DEST_DIR/logs/nginx_access.log;
-    error_log $DEST_DIR/logs/nginx_error.log;
+    access_log %s/logs/nginx_access.log;
+    error_log %s/logs/nginx_error.log;
 }
-EOF
+' "$DOMAIN" "$DEST_DIR" "$SERVICE_NAME" "$CSP_HEADER" "$DEST_DIR" "$DEST_DIR" "$DEST_DIR" | sudo tee /etc/nginx/sites-available/$SERVICE_NAME > /dev/null
+
+echo ">>> KROK 5.5: Tworzenie katalogu cache dla Nginx..."
+sudo mkdir -p /var/cache/nginx/mobywatel_cache
+sudo chown -R www-data:www-data /var/cache/nginx/mobywatel_cache
 
 # Włącz nową konfigurację i usuń domyślną
 sudo ln -sf /etc/nginx/sites-available/$SERVICE_NAME /etc/nginx/sites-enabled/
@@ -180,18 +175,14 @@ sudo systemctl restart nginx
 
 # --- KROK 7: Konfiguracja SSL i HTTP/2 za pomocą Certbota ---
 echo ">>> KROK 7: Uruchamianie Certbota dla $DOMAIN..."
-# Certbot teraz znajdzie działającą konfigurację na porcie 80,
-# automatycznie doda ustawienia SSL oraz włączy HTTP/2.
 sudo certbot --nginx --non-interactive --agree-tos -m "$SSL_EMAIL" -d "$DOMAIN" --redirect
 
-# Certbot sam przeładowuje Nginx, więc kolejny restart nie jest zwykle potrzebny,
-# ale zostawiamy dla pewności.
+# Certbot sam przeładowuje Nginx
 sudo systemctl restart nginx
 
 echo
 echo "----------------------------------------------------"
 echo "✅ WDROŻENIE ZAKOŃCZONE POMYŚLNIE!"
 echo "Twoja strona powinna być dostępna pod adresem: https://$DOMAIN"
-echo "Obsługa protokołu HTTP/2 została włączona automatycznie."
 echo "Logi aplikacji znajdziesz w: $DEST_DIR/logs/"
 echo "----------------------------------------------------"

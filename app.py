@@ -1717,6 +1717,7 @@ def api_delete_user_files(username):
             # Delete physical folder
             shutil.rmtree(user_folder)  # Deletes the entire user folder including logs
             logging.info(f"Admin deleted all data for user: {username}")
+            cache.delete_memoized(api_get_users) # Unieważnij cache
             return jsonify(
                 {
                     "success": True,
@@ -1832,6 +1833,7 @@ def api_generate_access_key():
 
         key = access_key_service.generate_access_key(description, validity_days)
         db.session.commit()
+        cache.delete_memoized(api_get_users)  # Unieważnij cache
         return jsonify({"success": True, "access_key": key})
     except Exception as e:
         db.session.rollback()
@@ -1854,6 +1856,7 @@ def api_deactivate_access_key():
         success = access_key_service.deactivate_access_key(key)
         if success:
             db.session.commit()
+            cache.delete_memoized(api_get_users)  # Unieważnij cache
             return jsonify(
                 {"success": True, "message": "Klucz dostępu dezaktywowany pomyślnie"}
             )
@@ -1885,6 +1888,7 @@ def api_delete_access_key():
         success = access_key_service.delete_access_key(key)
         if success:
             db.session.commit()
+            cache.delete_memoized(api_get_users)  # Unieważnij cache
             return jsonify(
                 {"success": True, "message": "Klucz dostępu usunięty pomyślnie"}
             )
@@ -1995,6 +1999,8 @@ def api_update_hubert_coins():
         db.session.rollback()
         logging.error(f"Error updating Hubert Coins: {e}")
         return jsonify(
+            {"success": False, "error": "Wystąpił błąd podczas aktualizacji Hubert Coins"}
+        ), 500
             {
                 "success": False,
                 "error": "Wystąpił błąd podczas aktualizacji Hubert Coinów",
