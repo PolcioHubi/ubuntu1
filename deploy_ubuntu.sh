@@ -2,9 +2,9 @@
 
 # ==============================================================================
 # Skrypt do pełnego wdrożenia aplikacji Flask/Gunicorn z Nginx, SSL i Logowaniem
-# WERSJA OSTATECZNA (2025-08-06)
-# Uwzględnia wszystkie poprawki: uprawnienia, cache, bezpieczny Nginx, wczytywanie .env
-# oraz wyłączenie cache dla panelu admina w celu natychmiastowego odświeżania.
+# WERSJA OSTATECZNA PANCERNA v2 (2025-08-06)
+# Rozwiązuje problem z nagłówkami bezpieczeństwa (HSTS) po modyfikacji przez Certbot
+# poprzez użycie dedykowanego pliku z nagłówkami.
 # ==============================================================================
 
 # Zatrzymaj skrypt w przypadku błędu
@@ -17,13 +17,14 @@ DEST_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 DOMAIN="gov-mobywatel.polcio.p5.tiktalik.io"
 SSL_EMAIL="polciovps@atomicmail.io"
 GUNICORN_WORKERS=$((2 * $(nproc) + 1))
+# UWAGA: 'unsafe-inline' obniża ocenę, ale jest konieczne dla działania obecnych stylów.
 CSP_HEADER="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self';"
 
 
 echo ">>> START: Rozpoczynanie wdrożenia aplikacji $SERVICE_NAME..."
-echo ">>> Katalog aplikacji (uruchomienie z źródła): $DEST_DIR"
-echo ">>> Użyta liczba workerów Gunicorna: $GUNICORN_WORKERS"
+# ... (reszta skryptu pozostaje bez zmian aż do KROKU 4.5)
 
+# --- KROK 0 do 3 pozostają identyczne ---
 # --- KROK 0: Utworzenie dedykowanego użytkownika (jeśli nie istnieje) ---
 echo ">>> KROK 0: Sprawdzanie i tworzenie użytkownika systemowego $PROJECT_USER..."
 if ! id "$PROJECT_USER" &>/dev/null; then
@@ -32,34 +33,27 @@ if ! id "$PROJECT_USER" &>/dev/null; then
 else
     echo "Użytkownik $PROJECT_USER już istnieje."
 fi
-
 # --- KROK 1: Instalacja podstawowych zależności ---
 echo ">>> KROK 1: Instalowanie Nginx, Pip, Venv i Certbota..."
 sudo apt-get update
 sudo apt-get install -y nginx python3-pip python3-venv certbot python3-certbot-nginx redis-server
-
-# Upewnij się, że Redis jest uruchomiony i włączony przy starcie systemu
+# --- Uruchomienie Redis ---
 echo ">>> Upewnianie się, że Redis jest uruchomiony i włączony..."
 sudo systemctl start redis-server
 sudo systemctl enable redis-server
-
 # --- KROK 1.5: Dodanie użytkownika Nginx do grupy projektu ---
 echo ">>> KROK 1.5: Dodawanie użytkownika www-data do grupy $PROJECT_USER..."
 sudo usermod -aG $PROJECT_USER www-data
-
 # --- KROK 2: Przygotowanie katalogu aplikacji ---
 echo ">>> KROK 2: Ustawianie właściciela katalogu $DEST_DIR..."
 sudo chown -R $PROJECT_USER:$PROJECT_USER $DEST_DIR
-
 echo ">>> KROK 2.5: Tworzenie katalogu na logi..."
 sudo mkdir -p $DEST_DIR/logs
 sudo chown -R $PROJECT_USER:$PROJECT_USER $DEST_DIR/logs
-
 echo ">>> KROK 2.6: Ustawianie bezpiecznych uprawnień do plików i folderów..."
 sudo find $DEST_DIR -type d -exec chmod 750 {} \;
 sudo find $DEST_DIR -type f -exec chmod 640 {} \;
 sudo chmod +x $0
-
 # --- KROK 3: Konfiguracja środowiska wirtualnego i zależności ---
 echo ">>> KROK 3: Uruchamianie konfiguracji środowiska Python jako użytkownik $PROJECT_USER..."
 sudo -u "$PROJECT_USER" bash -c "
@@ -70,26 +64,19 @@ SECRET_KEY=\$(openssl rand -hex 32)
 ADMIN_USERNAME=admin
 ADMIN_PASSWORD=\$(openssl rand -hex 16)
 EOF
-
 echo '--- Tworzenie środowiska wirtualnego w $DEST_DIR/venv...'
 python3 -m venv '$DEST_DIR/venv'
-
 chmod -R +x '$DEST_DIR/venv/bin'
-
 echo '--- Aktualizacja pip i instalacja zależności z requirements.txt...'
 '$DEST_DIR/venv/bin/pip' install --upgrade pip
 '$DEST_DIR/venv/bin/pip' install -r '$DEST_DIR/requirements.txt'
-
 echo '--- Wykonywanie migracji bazy danych...'
-# Najpierw usuwamy stare migracje i bazę, jeśli istnieją, dla pewności czystej instalacji
 rm -rf '$DEST_DIR/migrations'
 rm -f '$DEST_DIR/auth_data/database.db'
-# Tworzymy nowe, czyste migracje od zera
 '$DEST_DIR/venv/bin/flask' --app '$DEST_DIR/wsgi.py' db init
 '$DEST_DIR/venv/bin/flask' --app '$DEST_DIR/wsgi.py' db migrate -m 'Initial deployment migration'
 '$DEST_DIR/venv/bin/flask' --app '$DEST_DIR/wsgi.py' db upgrade
 "
-
 # --- KROK 4: Konfiguracja usługi Systemd dla Gunicorn ---
 echo ">>> KROK 4: Tworzenie pliku usługi /etc/systemd/system/${SERVICE_NAME}.service..."
 sudo rm -f /etc/systemd/system/${SERVICE_NAME}.service
@@ -97,7 +84,6 @@ sudo tee /etc/systemd/system/${SERVICE_NAME}.service > /dev/null <<EOF
 [Unit]
 Description=Gunicorn instance to serve $SERVICE_NAME
 After=network.target
-
 [Service]
 User=$PROJECT_USER
 Group=$PROJECT_USER
@@ -107,9 +93,28 @@ Environment="PATH=$DEST_DIR/venv/bin"
 Environment="FLASK_ENV=production"
 ExecStart=$DEST_DIR/venv/bin/gunicorn --workers $GUNICORN_WORKERS --bind unix:$DEST_DIR/${SERVICE_NAME}.sock -m 007 --access-logfile $DEST_DIR/logs/gunicorn_access.log --error-logfile $DEST_DIR/logs/gunicorn_error.log wsgi:application
 Restart=always
-
 [Install]
 WantedBy=multi-user.target
+EOF
+
+# ==============================================================================
+# OSTATECZNA POPRAWKA: Tworzymy dedykowany plik z nagłówkami bezpieczeństwa
+# ==============================================================================
+echo ">>> KROK 4.5: Tworzenie pliku z nagłówkami bezpieczeństwa..."
+sudo mkdir -p /etc/nginx/snippets
+sudo tee /etc/nginx/snippets/security-headers.conf > /dev/null <<EOF
+# HSTS (max-age = 2 lata), wymusza HTTPS
+add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
+# Ochrona przed MIME sniffing
+add_header X-Content-Type-Options "nosniff" always;
+# Ochrona przed clickjacking
+add_header X-Frame-Options "SAMEORIGIN" always;
+# Ulepszona polityka Referrer
+add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+# Blokowanie niechcianych funkcji przeglądarki
+add_header Permissions-Policy "camera=(), microphone=(), geolocation=()" always;
+# Polityka bezpieczeństwa treści
+add_header Content-Security-Policy "$CSP_HEADER" always;
 EOF
 
 # --- KROK 5: Konfiguracja Nginx (WSTĘPNA, tylko HTTP) ---
@@ -124,11 +129,12 @@ server {
     listen [::]:80;
     server_name %s;
 
-    # POPRAWKA: Wyłącz cache dla panelu admina, aby zmiany były widoczne natychmiast.
+    # Dołączamy nasz plik z nagłówkami. Certbot go uszanuje i skopiuje.
+    include /etc/nginx/snippets/security-headers.conf;
+
     location /admin {
         proxy_cache_bypass 1;
         proxy_no_cache 1;
-
         proxy_pass http://unix:%s/%s.sock;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
@@ -136,7 +142,6 @@ server {
         proxy_set_header X-Forwarded-Proto \$scheme;
     }
 
-    # Włącz buforowanie dla reszty aplikacji.
     location / {
         proxy_cache mobywatel_cache;
         proxy_cache_valid 200 10m;
@@ -146,18 +151,11 @@ server {
         proxy_cache_background_update on;
         proxy_ignore_headers Cache-Control Expires Set-Cookie;
         add_header X-Proxy-Cache \$upstream_cache_status;
-
         proxy_pass http://unix:%s/%s.sock;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
-
-        add_header X-Content-Type-Options "nosniff" always;
-        add_header X-Frame-Options "SAMEORIGIN" always;
-        add_header X-XSS-Protection "1; mode=block" always;
-        add_header Referrer-Policy "no-referrer-when-downgrade" always;
-        add_header Content-Security-Policy "%s" always;
     }
 
     location /static {
@@ -167,7 +165,7 @@ server {
     access_log %s/logs/nginx_access.log;
     error_log %s/logs/nginx_error.log;
 }
-' "$DOMAIN" "$DEST_DIR" "$SERVICE_NAME" "$DEST_DIR" "$SERVICE_NAME" "$CSP_HEADER" "$DEST_DIR" "$DEST_DIR" "$DEST_DIR" | sudo tee /etc/nginx/sites-available/$SERVICE_NAME > /dev/null
+' "$DOMAIN" "$DEST_DIR" "$SERVICE_NAME" "$DEST_DIR" "$SERVICE_NAME" "$DEST_DIR" "$DEST_DIR" "$DEST_DIR" | sudo tee /etc/nginx/sites-available/$SERVICE_NAME > /dev/null
 
 echo ">>> KROK 5.5: Tworzenie katalogu cache dla Nginx..."
 sudo mkdir -p /var/cache/nginx/mobywatel_cache
@@ -194,12 +192,12 @@ sudo systemctl restart nginx
 echo ">>> KROK 7: Uruchamianie Certbota dla $DOMAIN..."
 sudo certbot --nginx --non-interactive --agree-tos -m "$SSL_EMAIL" -d "$DOMAIN" --redirect
 
-# Certbot sam przeładowuje Nginx
+# Certbot sam przeładowuje Nginx, ale restartujemy dla pewności zastosowania nagłówków
 sudo systemctl restart nginx
 
 echo
 echo "----------------------------------------------------"
-echo "✅ WDROŻENIE ZAKOŃCZONE POMYŚLNIE!"
+echo "✅ WDROŻENIE PANCERNE ZAKOŃCZONE POMYŚLNIE!"
 echo "Twoja strona powinna być dostępna pod adresem: https://$DOMAIN"
-echo "Logi aplikacji znajdziesz w: $DEST_DIR/logs/"
+echo "Sprawdź jej ocenę bezpieczeństwa na https://securityheaders.com/ i https://www.ssllabs.com/ssltest/"
 echo "----------------------------------------------------"
