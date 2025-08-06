@@ -16,7 +16,11 @@ DEST_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 DOMAIN="gov-mobywatel.polcio.p5.tiktalik.io"
 SSL_EMAIL="polciovps@atomicmail.io"
 GUNICORN_WORKERS=$((2 * $(nproc) + 1))
+<<<<<<< HEAD
 CSP_HEADER="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self';"
+=======
+CSP_HEADER="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self';"
+>>>>>>> dc94dc1a97b11b00aad043884c7595daea55a521
 
 
 echo ">>> START: Rozpoczynanie wdrożenia aplikacji $SERVICE_NAME..."
