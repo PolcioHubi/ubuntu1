@@ -1249,7 +1249,7 @@ def index():
                     )
                 db.session.commit()
                 try:
-                    cache.delete_memoized(api_get_users)  # Unieważnij cache po zmianie statystyk plików
+                    cache.delete('view//admin/api/users')  # Unieważnij cache po zmianie statystyk plików
                 except Exception as cache_error:
                     logging.error(f"Error invalidating cache for api_get_users: {cache_error}", exc_info=True)
             except Exception as db_error:
@@ -1670,7 +1670,7 @@ def api_delete_registered_user(username):
             f"Successfully processed deletion for '{username}'. Sending success response."
         )
         try:
-            cache.delete_memoized(api_get_users)  # Precyzyjne unieważnienie cache'a
+            cache.delete('view//admin/api/users')  # Precyzyjne unieważnienie cache'a
         except Exception as cache_error:
             logging.error(f"Error invalidating cache for api_get_users: {cache_error}", exc_info=True)
         return jsonify({"success": True, "message": message})
@@ -1717,7 +1717,7 @@ def api_delete_user_files(username):
             # Delete physical folder
             shutil.rmtree(user_folder)  # Deletes the entire user folder including logs
             logging.info(f"Admin deleted all data for user: {username}")
-            cache.delete_memoized(api_get_users) # Unieważnij cache
+            cache.delete('view//admin/api/users') # Unieważnij cache
             return jsonify(
                 {
                     "success": True,
@@ -1833,7 +1833,7 @@ def api_generate_access_key():
 
         key = access_key_service.generate_access_key(description, validity_days)
         db.session.commit()
-        cache.delete_memoized(api_get_users)  # Unieważnij cache
+        cache.delete('view//admin/api/users')  # Unieważnij cache
         return jsonify({"success": True, "access_key": key})
     except Exception as e:
         db.session.rollback()
@@ -1856,7 +1856,7 @@ def api_deactivate_access_key():
         success = access_key_service.deactivate_access_key(key)
         if success:
             db.session.commit()
-            cache.delete_memoized(api_get_users)  # Unieważnij cache
+            cache.delete('view//admin/api/users')  # Unieważnij cache
             return jsonify(
                 {"success": True, "message": "Klucz dostępu dezaktywowany pomyślnie"}
             )
@@ -1888,7 +1888,7 @@ def api_delete_access_key():
         success = access_key_service.delete_access_key(key)
         if success:
             db.session.commit()
-            cache.delete_memoized(api_get_users)  # Unieważnij cache
+            cache.delete('view//admin/api/users')  # Unieważnij cache
             return jsonify(
                 {"success": True, "message": "Klucz dostępu usunięty pomyślnie"}
             )
@@ -1946,7 +1946,7 @@ def api_toggle_user_status():
         if success:
             db.session.commit()
             try:
-                cache.delete_memoized(api_get_users)  # Precyzyjne unieważnienie cache'a
+                cache.delete('view//admin/api/users')  # Precyzyjne unieważnienie cache'a
             except Exception as cache_error:
                 logging.error(f"Error invalidating cache for api_get_users: {cache_error}", exc_info=True)
             return jsonify(
@@ -1986,7 +1986,7 @@ def api_update_hubert_coins():
         if success:
             db.session.commit()
             try:
-                cache.delete_memoized(api_get_users)  # Precyzyjne unieważnienie cache'a
+                cache.delete('view//admin/api/users')  # Precyzyjne unieważnienie cache'a
             except Exception as cache_error:
                 logging.error(f"Error invalidating cache for api_get_users: {cache_error}", exc_info=True)
             return jsonify({"success": True, "message": message})
@@ -2000,11 +2000,6 @@ def api_update_hubert_coins():
         logging.error(f"Error updating Hubert Coins: {e}")
         return jsonify(
             {"success": False, "error": "Wystąpił błąd podczas aktualizacji Hubert Coins"}
-        ), 500
-            {
-                "success": False,
-                "error": "Wystąpił błąd podczas aktualizacji Hubert Coinów",
-            }
         ), 500
 
 
