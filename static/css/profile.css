@@ -1,0 +1,31 @@
+        body {
+            font-family: 'Courier New', Courier, monospace;
+            background-color: #0d0d0d;
+            color: #e0e0e0;
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            -webkit-tap-highlight-color: transparent;
+        }
+        .commission-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 15px;
+        }
+        .commission-table th, .commission-table td {
+            border: 1px solid #333;
+            padding: 10px;
+            text-align: left;
+        }
+        .commission-table th {
+            background-color: #2a2a2a;
+            color: #4caf50;
+        }
+        .commission-table tbody tr:nth-child(odd) {
+            background-color: #1a1a1a;
+        }
+        .commission-table tbody tr:nth-child(even) {
+            background-color: #222;
+        }
